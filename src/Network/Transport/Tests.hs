@@ -1039,6 +1039,45 @@ testCrossing transport numRepeats = do
     takeMVar aDone
     takeMVar bDone
 
+-- | Confirm that 'closeConnectionTo' stops incoming and outgoing connections
+-- and that subsequent connections work as normal.
+testCloseConnectionTo transport = do
+
+  Right endpointOne <- newEndPoint transport
+  Right endpointTwo <- newEndPoint transport
+  connectionClosed <- newEmptyMVar
+  testDone <- newEmptyMVar
+
+  -- endpointOne will connect to endpointTwo and wait for endpointTwo to
+  -- closeConnectionTo.
+  forkTry $ do
+    Right conn <- connect endpointOne (address endpointTwo) ReliableOrdered defaultConnectHints
+    Right () <- send conn ["ping"]
+    ConnectionOpened _ _ _ <- receive endpointOne
+    Received _ _ <- receive endpointOne
+    readMVar connectionClosed
+    Left _ <- send conn ["ping"]
+    Right conn <- connect endpointOne (address endpointTwo) ReliableOrdered defaultConnectHints
+    Right () <- send conn ["ping"]
+    close conn
+
+  forkTry $ do
+    ConnectionOpened _ _ _ <- receive endpointTwo
+    Received _ _ <- receive endpointTwo
+    Right conn <- connect endpointTwo (address endpointOne) ReliableOrdered defaultConnectHints
+    Right () <- send conn ["pong"]
+    closeConnectionTo endpointTwo (address endpointOne)
+    putMVar connectionClosed ()
+    ErrorEvent (TransportError (EventConnectionLost addr) _) <- receive endpointTwo
+    ConnectionOpened _ _ _ <- receive endpointTwo
+    Received _ _ <- receive endpointTwo
+    ConnectionClosed _ <- receive endpointTwo
+    putMVar testDone ()
+
+  readMVar testDone
+  closeEndPoint endpointOne
+  closeEndPoint endpointTwo
+
 -- Transport tests
 testTransport :: IO (Either String Transport) -> IO ()
 testTransport newTransport = do
@@ -1064,6 +1103,7 @@ testTransport newTransport = do
     , ("ExceptionOnReceive",    testExceptionOnReceive newTransport)
     , ("SendException",         testSendException newTransport)
     , ("Kill",                  testKill newTransport 1000)
+    , ("CloseConnectionTo",     testCloseConnectionTo transport)
     ]
   where
     numPings = 10000 :: Int
